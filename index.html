@@ -404,6 +404,18 @@
   .mode-tab[aria-selected="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
   .mode-tab:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
   .flash-card {
     border: 1px solid var(--line);
     border-radius: 10px;
@@ -436,6 +448,7 @@
     border-top: 1px dashed var(--line);
     padding-top: 22px;
   }
+  .flash-facts[hidden] { display: none; }
   .flash-fact { display: flex; gap: 12px; align-items: baseline; font-size: .98rem; color: var(--ink); line-height: 1.55; }
   .flash-fact-n {
     font-family: "IBM Plex Mono", monospace;
@@ -462,9 +475,9 @@
     </div>
   </header>
 
-  <nav class="mode-tabs" role="tablist">
-    <button class="mode-tab" id="tabDrill" type="button" role="tab" aria-selected="true">Drill</button>
-    <button class="mode-tab" id="tabFlash" type="button" role="tab" aria-selected="false">Flashcards</button>
+  <nav class="mode-tabs" role="tablist" aria-label="Study mode">
+    <button class="mode-tab" id="tabDrill" type="button" role="tab" aria-selected="true" aria-controls="drillMainPanel" tabindex="0">Drill</button>
+    <button class="mode-tab" id="tabFlash" type="button" role="tab" aria-selected="false" aria-controls="flashMainPanel" tabindex="-1">Flashcards</button>
   </nav>
 
   <div class="layout">
@@ -498,11 +511,11 @@
       </div>
     </aside>
 
-    <div class="panel" id="drillMainPanel">
+    <div class="panel" id="drillMainPanel" role="tabpanel" aria-labelledby="tabDrill">
       <main class="stage" id="stage"></main>
     </div>
-    <div class="panel" id="flashMainPanel" style="display:none;">
-      <main class="stage" id="flashStage"></main>
+    <div class="panel" id="flashMainPanel" role="tabpanel" aria-labelledby="tabFlash" hidden>
+      <main class="stage" id="flashStage" aria-live="polite" aria-atomic="false"></main>
     </div>
   </div>
 
@@ -558,6 +571,35 @@ function getClueSegments(q) {
   return [q.clue15, q.clue10, q.clue5];
 }
 
+function splitFactSentences(text) {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (!clean) return [];
+  if (typeof Intl !== "undefined" && Intl.Segmenter) {
+    const segmenter = new Intl.Segmenter("en", { granularity: "sentence" });
+    return Array.from(segmenter.segment(clean), item => item.segment.trim()).filter(Boolean);
+  }
+  return (clean.match(/[^.!?]+(?:[.!?]+["']?|$)/g) || [clean])
+    .map(sentence => sentence.trim())
+    .filter(Boolean);
+}
+
+function getFlashFacts(q) {
+  if (q.level !== "finals") {
+    return [q.clue15, q.clue10, q.clue5]
+      .map(fact => (fact || "").replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+  }
+
+  const cleanText = q.text
+    .replace(/\(\+\)|\(\*\)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const promptIdx = cleanText.search(/\bfor the points?\b/i);
+  const clueText = (promptIdx >= 0 ? cleanText.slice(0, promptIdx) : cleanText).trim();
+  const facts = splitFactSentences(clueText);
+  return (facts.length ? facts : [cleanText]).slice(0, 5);
+}
+
 function wordCount(text) {
   return ((text || "").match(/\S+/g) || []).length;
 }
@@ -577,7 +619,7 @@ function clearAutoTimer() {
 
 function scheduleAutoAdvance() {
   clearAutoTimer();
-  if (!state.autoAdvance || !state.current || state.answerShown) return;
+  if (state.mode !== "drill" || !state.autoAdvance || !state.current || state.answerShown) return;
   const segs = getClueSegments(state.current);
   const currentText = segs[state.revealed - 1] || "";
   const delay = msForSegment(currentText, state.autoWps);
@@ -692,28 +734,39 @@ function judge(outcome) {
   }
 }
 
-function loadFlashcard() {
-  if (state.flashOrder.length === 0) { state.flashCurrent = null; renderFlashStage(); return; }
+function loadFlashcard(focusId = null) {
+  if (state.flashOrder.length === 0) { state.flashCurrent = null; renderFlashStage(focusId); return; }
   if (state.flashIdx >= state.flashOrder.length) {
     state.flashOrder = shuffledIndices(state.flashPool.length);
     state.flashIdx = 0;
   }
   state.flashCurrent = state.flashPool[state.flashOrder[state.flashIdx]];
   state.flashFlipped = false;
-  renderFlashStage();
+  renderFlashStage(focusId);
 }
 
 function nextFlashcard() {
   state.flashIdx += 1;
-  loadFlashcard();
+  loadFlashcard("btnNextCard");
 }
 
 function flipFlashcard() {
   state.flashFlipped = !state.flashFlipped;
-  renderFlashStage();
+  const facts = document.getElementById("flashFacts");
+  const button = document.getElementById("btnFlip");
+  const announcement = document.getElementById("flashAnnouncement");
+  if (!facts || !button) return;
+  facts.hidden = !state.flashFlipped;
+  button.textContent = state.flashFlipped ? "Hide Facts" : "Reveal Facts";
+  button.setAttribute("aria-expanded", String(state.flashFlipped));
+  if (announcement) {
+    announcement.textContent = state.flashFlipped
+      ? `${facts.children.length} facts revealed.`
+      : "Facts hidden.";
+  }
 }
 
-function renderFlashStage() {
+function renderFlashStage(focusId = null) {
   const stage = document.getElementById("flashStage");
   if (!stage) return;
   if (!state.flashCurrent) {
@@ -724,30 +777,30 @@ function renderFlashStage() {
   const catClass = q.category === "US" ? "us" : "world";
   const catLabel = q.category === "US" ? "US History" : "World History";
   const isFinals = q.level === "finals";
-  const facts = getClueSegments(q);
+  const facts = getFlashFacts(q);
 
   let html = "";
   html += `<div class="q-meta"><span class="badge ${catClass}">${catLabel}</span>${isFinals ? '<span class="finals-badge">Finals Level</span>' : ''}<span class="topic">${escapeHtml(q.topic)}</span><span class="qnum">#${q.id}</span></div>`;
 
   html += `<div class="flash-card">`;
   html += `<div class="flash-answer">${escapeHtml(q.answer)}</div>`;
-  if (state.flashFlipped) {
-    html += '<div class="flash-facts">';
-    facts.forEach((f, i) => {
-      html += `<div class="flash-fact"><span class="flash-fact-n">${i + 1}</span><span class="flash-fact-text">${escapeHtml(f)}</span></div>`;
-    });
-    html += '</div>';
-  }
+  html += `<div class="flash-facts" id="flashFacts"${state.flashFlipped ? "" : " hidden"}>`;
+  facts.forEach((f, i) => {
+    html += `<div class="flash-fact"><span class="flash-fact-n">${i + 1}</span><span class="flash-fact-text">${escapeHtml(f)}</span></div>`;
+  });
+  html += '</div>';
   html += '</div>';
 
   html += '<div class="controls">';
-  html += `<button class="action btn-primary" id="btnFlip" type="button">${state.flashFlipped ? "Hide Facts" : "Reveal Facts"}</button>`;
+  html += `<button class="action btn-primary" id="btnFlip" type="button" aria-expanded="${state.flashFlipped}" aria-controls="flashFacts">${state.flashFlipped ? "Hide Facts" : "Reveal Facts"}</button>`;
   html += `<button class="action btn-ghost" id="btnNextCard" type="button">Next Card &rarr;</button>`;
   html += '</div>';
+  html += '<p class="sr-only" id="flashAnnouncement" aria-live="polite"></p>';
 
   stage.innerHTML = html;
   document.getElementById("btnFlip").addEventListener("click", flipFlashcard);
   document.getElementById("btnNextCard").addEventListener("click", nextFlashcard);
+  if (focusId) document.getElementById(focusId)?.focus();
 }
 
 function levelScoped(list) {
@@ -954,10 +1007,15 @@ const FOOTER_TEXT = {
 
 function setMode(mode) {
   state.mode = mode;
-  document.getElementById("tabDrill").setAttribute("aria-selected", String(mode === "drill"));
-  document.getElementById("tabFlash").setAttribute("aria-selected", String(mode === "flash"));
-  document.getElementById("drillMainPanel").style.display = mode === "drill" ? "" : "none";
-  document.getElementById("flashMainPanel").style.display = mode === "flash" ? "" : "none";
+  const drillActive = mode === "drill";
+  const tabDrill = document.getElementById("tabDrill");
+  const tabFlash = document.getElementById("tabFlash");
+  tabDrill.setAttribute("aria-selected", String(drillActive));
+  tabFlash.setAttribute("aria-selected", String(!drillActive));
+  tabDrill.tabIndex = drillActive ? 0 : -1;
+  tabFlash.tabIndex = drillActive ? -1 : 0;
+  document.getElementById("drillMainPanel").hidden = !drillActive;
+  document.getElementById("flashMainPanel").hidden = drillActive;
   document.getElementById("autoAdvanceSection").style.display = mode === "drill" ? "" : "none";
   document.getElementById("scoreSection").style.display = mode === "drill" ? "" : "none";
   document.getElementById("logSection").style.display = mode === "drill" ? "" : "none";
@@ -971,6 +1029,22 @@ function setMode(mode) {
 
 document.getElementById("tabDrill").addEventListener("click", () => setMode("drill"));
 document.getElementById("tabFlash").addEventListener("click", () => setMode("flash"));
+
+const modeTabs = [document.getElementById("tabDrill"), document.getElementById("tabFlash")];
+modeTabs.forEach((tab, index) => {
+  tab.addEventListener("keydown", event => {
+    let nextIndex = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % modeTabs.length;
+    if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + modeTabs.length) % modeTabs.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = modeTabs.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextTab = modeTabs[nextIndex];
+    setMode(nextTab.id === "tabDrill" ? "drill" : "flash");
+    nextTab.focus();
+  });
+});
 
 applyFilters();
 renderSidebarStats();

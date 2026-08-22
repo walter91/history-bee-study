@@ -1,20 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Wraps a freshly built (plain, head-less) history_bee_quiz.html with the
-PWA scaffolding this folder needs: doctype/head/body, manifest link, iOS
-install meta tags, and the service-worker registration script. Idempotent --
-safe to run on an already-wrapped file (it will just no-op the parts that
-already match).
+"""Add the PWA document shell to the generated quiz HTML.
 
-Usage: after running build_assets.py in the parent project, copy the fresh
-scratchpad output over this folder's index.html, then run this script:
-    cp <scratchpad>/history_bee_quiz.html index.html
-    python3 apply_pwa_wrapper.py
+``build_assets.py`` imports :func:`wrap_html` and writes the wrapped result
+directly to this folder's ``index.html``. Running this module directly remains
+an idempotent repair option for an already-generated file.
 """
 import os
-
-path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
-with open(path, encoding="utf-8") as f:
-    html = f.read()
 
 HEAD_OLD = """<title>History Bee Drills</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -73,26 +64,39 @@ renderLog();
 </body>
 </html>"""
 
-changed = 0
-if HEAD_OLD in html:
-    html = html.replace(HEAD_OLD, HEAD_NEW, 1)
-    changed += 1
-elif "<!DOCTYPE html>" not in html:
-    raise SystemExit("Could not find expected <head> block to wrap -- template may have changed.")
+def wrap_html(html):
+    """Return PWA-wrapped HTML and the number of transforms applied."""
+    changed = 0
+    if HEAD_OLD in html:
+        html = html.replace(HEAD_OLD, HEAD_NEW, 1)
+        changed += 1
+    elif "<!DOCTYPE html>" not in html:
+        raise ValueError("Could not find expected <head> block to wrap -- template may have changed.")
 
-if BODY_OLD in html:
-    html = html.replace(BODY_OLD, BODY_NEW, 1)
-    changed += 1
-elif "<body>" not in html:
-    raise SystemExit("Could not find expected shell-div boundary to insert <body> at.")
+    if BODY_OLD in html:
+        html = html.replace(BODY_OLD, BODY_NEW, 1)
+        changed += 1
+    elif "<body>" not in html:
+        raise ValueError("Could not find expected shell-div boundary to insert <body> at.")
 
-if TAIL_OLD in html:
-    html = html.replace(TAIL_OLD, TAIL_NEW, 1)
-    changed += 1
-elif 'register("sw.js")' not in html:
-    raise SystemExit("Could not find expected end-of-script block to append the SW registration to.")
+    if TAIL_OLD in html:
+        html = html.replace(TAIL_OLD, TAIL_NEW, 1)
+        changed += 1
+    elif 'register("sw.js")' not in html:
+        raise ValueError("Could not find expected end-of-script block to append the SW registration to.")
 
-with open(path, "w", encoding="utf-8") as f:
-    f.write(html)
+    return html, changed
 
-print(f"Applied {changed}/3 wrapper transforms (0 means the file was already wrapped).")
+
+def main():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+    with open(path, encoding="utf-8") as f:
+        html = f.read()
+    html, changed = wrap_html(html)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"Applied {changed}/3 wrapper transforms (0 means the file was already wrapped).")
+
+
+if __name__ == "__main__":
+    main()
