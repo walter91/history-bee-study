@@ -184,6 +184,40 @@
   .filter-btn[aria-pressed="true"] { border-color: var(--brass); background: color-mix(in srgb, var(--brass) 14%, transparent); }
   .filter-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
+  .auto-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: .88rem;
+    color: var(--ink);
+    cursor: pointer;
+    user-select: none;
+  }
+  .auto-toggle input { accent-color: var(--brass); width: 15px; height: 15px; cursor: pointer; }
+  .auto-wpm {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    font-size: .82rem;
+    color: var(--ink-soft);
+    transition: opacity .15s;
+  }
+  .auto-wpm.disabled { opacity: .45; pointer-events: none; }
+  .auto-wpm input[type="number"] {
+    width: 64px;
+    font: inherit;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .82rem;
+    color: var(--ink);
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 4px 6px;
+    text-align: right;
+  }
+
   .stat-row { display: flex; justify-content: space-between; align-items: baseline; padding: 3px 0; font-size: .88rem; color: var(--ink-soft); }
   .stat-row b {
     font-family: "IBM Plex Mono", monospace;
@@ -318,6 +352,8 @@
   .btn-ghost:hover { border-color: var(--ink-soft); }
   .btn-good { background: var(--good-soft); color: var(--good); border-color: var(--good); }
   .btn-bad { background: var(--bad-soft); color: var(--bad); border-color: var(--bad); }
+  .btn-neutral { background: transparent; color: var(--ink-soft); border-color: var(--line); }
+  .btn-neutral:hover { border-color: var(--ink-soft); }
   button.action:disabled { opacity: .4; cursor: not-allowed; }
 
   .log { margin-top: 22px; }
@@ -343,6 +379,7 @@
   .log li .pts { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
   .log li.correct .pts { color: var(--good); }
   .log li.incorrect .pts { color: var(--bad); }
+  .log li.abstain .pts { color: var(--ink-soft); }
   .log .empty { color: var(--ink-soft); font-size: .85rem; padding: 6px 2px; }
 
   footer.note {
@@ -377,6 +414,17 @@
       <div>
         <h2>Difficulty</h2>
         <div class="filters" id="levelFilters"></div>
+      </div>
+      <div>
+        <h2>Auto-Advance</h2>
+        <label class="auto-toggle">
+          <input type="checkbox" id="autoToggle">
+          <span>Read clues automatically</span>
+        </label>
+        <label class="auto-wpm" id="autoWpmRow">
+          <span>Words per second</span>
+          <input type="number" id="autoWpsInput" min="1" max="8" step="0.5">
+        </label>
       </div>
       <div>
         <h2>Session Score</h2>
@@ -414,13 +462,66 @@ const state = {
   current: null,
   revealed: 1,
   answerShown: false,
+  awaitingNext: false,
   filter: "All",
   levelFilter: "All",
   score: 0,
   answered: 0,
   correct: 0,
   log: [],
+  autoAdvance: false,
+  autoWps: 3,
+  autoTimer: null,
 };
+
+function getClueSegments(q) {
+  if (q.level === "finals") {
+    const plusIdx = q.text.indexOf("(+)");
+    const starIdx = q.text.indexOf("(*)");
+    return [
+      q.text.slice(0, plusIdx).trim(),
+      q.text.slice(plusIdx + 3, starIdx).trim(),
+      q.text.slice(starIdx + 3).trim(),
+    ];
+  }
+  return [q.clue15, q.clue10, q.clue5];
+}
+
+function wordCount(text) {
+  return ((text || "").match(/\S+/g) || []).length;
+}
+
+function msForSegment(text, wps) {
+  const words = Math.max(1, wordCount(text));
+  const rate = Math.max(0.5, wps || 3);
+  return Math.max(500, (words / rate) * 1000);
+}
+
+function clearAutoTimer() {
+  if (state.autoTimer) {
+    clearTimeout(state.autoTimer);
+    state.autoTimer = null;
+  }
+}
+
+function scheduleAutoAdvance() {
+  clearAutoTimer();
+  if (!state.autoAdvance || !state.current || state.answerShown) return;
+  const segs = getClueSegments(state.current);
+  const currentText = segs[state.revealed - 1] || "";
+  const delay = msForSegment(currentText, state.autoWps);
+  state.autoTimer = setTimeout(() => {
+    state.autoTimer = null;
+    if (state.revealed < 3) {
+      state.revealed += 1;
+      renderStage();
+      scheduleAutoAdvance();
+    } else {
+      state.answerShown = true;
+      renderStage();
+    }
+  }, delay);
+}
 
 function shuffledIndices(n) {
   const arr = Array.from({length: n}, (_, i) => i);
@@ -461,6 +562,7 @@ function applyFilters() {
 }
 
 function loadQuestion() {
+  clearAutoTimer();
   if (state.order.length === 0) { state.current = null; renderStage(); return; }
   if (state.idx >= state.order.length) {
     state.order = shuffledIndices(state.pool.length);
@@ -469,7 +571,9 @@ function loadQuestion() {
   state.current = state.pool[state.order[state.idx]];
   state.revealed = 1;
   state.answerShown = false;
+  state.awaitingNext = false;
   renderStage();
+  scheduleAutoAdvance();
 }
 
 function nextQuestion() {
@@ -480,25 +584,37 @@ function nextQuestion() {
 function revealNext() {
   if (state.revealed < 3) state.revealed += 1;
   renderStage();
+  scheduleAutoAdvance();
 }
 
 function showAnswer() {
   state.answerShown = true;
+  clearAutoTimer();
   renderStage();
 }
 
-function judge(isCorrect) {
+// outcome: "correct" | "wrong" | "abstain"
+function judge(outcome) {
   if (!state.answerShown || !state.current) return;
+  clearAutoTimer();
   const pts = state.revealed === 1 ? 15 : state.revealed === 2 ? 10 : 5;
+  const isCorrect = outcome === "correct";
   const earned = isCorrect ? pts : 0;
   state.score += earned;
   state.answered += 1;
   if (isCorrect) state.correct += 1;
-  state.log.unshift({ answer: state.current.answer, earned, isCorrect, ts: Date.now() });
+  state.log.unshift({ answer: state.current.answer, earned, outcome, ts: Date.now() });
   state.log = state.log.slice(0, 8);
   renderSidebarStats();
   renderLog();
-  nextQuestion();
+  if (!isCorrect && state.revealed < 3) {
+    // let them see the rest of the prompt they never heard before moving on
+    state.revealed = 3;
+    state.awaitingNext = true;
+    renderStage();
+  } else {
+    nextQuestion();
+  }
 }
 
 function levelScoped(list) {
@@ -562,8 +678,10 @@ function renderLog() {
   el.innerHTML = "";
   state.log.forEach(item => {
     const li = document.createElement("li");
-    li.className = item.isCorrect ? "correct" : "incorrect";
-    li.innerHTML = `<span>${item.answer}</span><span class="pts">${item.isCorrect ? "+" + item.earned : "0"}</span>`;
+    const cls = item.outcome === "correct" ? "correct" : item.outcome === "abstain" ? "abstain" : "incorrect";
+    li.className = cls;
+    const ptsLabel = item.outcome === "correct" ? "+" + item.earned : item.outcome === "abstain" ? "abstained" : "missed";
+    li.innerHTML = `<span>${item.answer}</span><span class="pts">${ptsLabel}</span>`;
     el.appendChild(li);
   });
 }
@@ -632,28 +750,37 @@ function renderStage() {
   }
 
   html += '<div class="controls">';
-  if (state.revealed < 3 && !state.answerShown) {
-    html += `<button class="action btn-primary" id="btnReveal" type="button">Reveal Next Clue (${state.revealed === 1 ? 10 : 5} pts)</button>`;
-  }
-  if (!state.answerShown) {
-    html += `<button class="action btn-ghost" id="btnShow" type="button">Show Answer</button>`;
+  if (state.awaitingNext) {
+    html += `<button class="action btn-primary" id="btnNext" type="button">Next Question &rarr;</button>`;
   } else {
-    html += `<button class="action btn-good" id="btnCorrect" type="button">I got it right</button>`;
-    html += `<button class="action btn-bad" id="btnWrong" type="button">I missed it</button>`;
-    html += `<button class="action btn-ghost" id="btnSkip" type="button">Skip &rarr;</button>`;
+    if (state.revealed < 3 && !state.answerShown) {
+      html += `<button class="action btn-primary" id="btnReveal" type="button">Reveal Next Clue (${state.revealed === 1 ? 10 : 5} pts)</button>`;
+    }
+    if (!state.answerShown) {
+      html += `<button class="action btn-ghost" id="btnShow" type="button">Show Answer</button>`;
+    } else {
+      html += `<button class="action btn-good" id="btnCorrect" type="button">I got it right</button>`;
+      html += `<button class="action btn-neutral" id="btnAbstain" type="button">I abstained</button>`;
+      html += `<button class="action btn-bad" id="btnWrong" type="button">I missed it</button>`;
+      html += `<button class="action btn-ghost" id="btnSkip" type="button">Skip &rarr;</button>`;
+    }
   }
   html += '</div>';
 
   stage.innerHTML = html;
 
+  const nextBtn = document.getElementById("btnNext");
+  if (nextBtn) nextBtn.addEventListener("click", nextQuestion);
   const revealBtn = document.getElementById("btnReveal");
   if (revealBtn) revealBtn.addEventListener("click", revealNext);
   const showBtn = document.getElementById("btnShow");
   if (showBtn) showBtn.addEventListener("click", showAnswer);
   const correctBtn = document.getElementById("btnCorrect");
-  if (correctBtn) correctBtn.addEventListener("click", () => judge(true));
+  if (correctBtn) correctBtn.addEventListener("click", () => judge("correct"));
+  const abstainBtn = document.getElementById("btnAbstain");
+  if (abstainBtn) abstainBtn.addEventListener("click", () => judge("abstain"));
   const wrongBtn = document.getElementById("btnWrong");
-  if (wrongBtn) wrongBtn.addEventListener("click", () => judge(false));
+  if (wrongBtn) wrongBtn.addEventListener("click", () => judge("wrong"));
   const skipBtn = document.getElementById("btnSkip");
   if (skipBtn) skipBtn.addEventListener("click", nextQuestion);
 }
@@ -661,6 +788,30 @@ function renderStage() {
 document.getElementById("resetBtn").addEventListener("click", () => {
   state.score = 0; state.answered = 0; state.correct = 0; state.log = [];
   renderSidebarStats(); renderLog();
+});
+
+const autoToggle = document.getElementById("autoToggle");
+const autoWpsInput = document.getElementById("autoWpsInput");
+const autoWpmRow = document.getElementById("autoWpmRow");
+
+autoWpsInput.value = state.autoWps;
+autoWpmRow.classList.toggle("disabled", !state.autoAdvance);
+
+autoToggle.addEventListener("change", () => {
+  state.autoAdvance = autoToggle.checked;
+  autoWpmRow.classList.toggle("disabled", !state.autoAdvance);
+  if (state.autoAdvance) {
+    scheduleAutoAdvance();
+  } else {
+    clearAutoTimer();
+  }
+});
+
+autoWpsInput.addEventListener("change", () => {
+  const v = parseFloat(autoWpsInput.value);
+  state.autoWps = Number.isFinite(v) && v > 0 ? v : 3;
+  autoWpsInput.value = state.autoWps;
+  if (state.autoAdvance) scheduleAutoAdvance();
 });
 
 applyFilters();
