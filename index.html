@@ -388,6 +388,63 @@
     font-size: .8rem;
     margin-top: 30px;
   }
+
+  .mode-tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+  .mode-tab {
+    font: inherit;
+    font-weight: 600;
+    font-size: .88rem;
+    padding: 9px 20px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--paper-raised);
+    color: var(--ink-soft);
+    cursor: pointer;
+  }
+  .mode-tab[aria-selected="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  .mode-tab:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+
+  .flash-card {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--paper);
+    padding: clamp(28px, 5vw, 48px) clamp(20px, 4vw, 36px);
+    min-height: 240px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 22px;
+    margin-bottom: 20px;
+  }
+  .flash-answer {
+    font-family: "Fraunces", serif;
+    font-weight: 600;
+    font-size: clamp(1.4rem, 1.05rem + 1.5vw, 2.3rem);
+    color: var(--ink);
+    text-wrap: balance;
+    line-height: 1.25;
+  }
+  .flash-facts {
+    width: 100%;
+    max-width: 640px;
+    display: flex;
+    flex-direction: column;
+    gap: 13px;
+    text-align: left;
+    border-top: 1px dashed var(--line);
+    padding-top: 22px;
+  }
+  .flash-fact { display: flex; gap: 12px; align-items: baseline; font-size: .98rem; color: var(--ink); line-height: 1.55; }
+  .flash-fact-n {
+    font-family: "IBM Plex Mono", monospace;
+    color: var(--brass-ink);
+    font-weight: 600;
+    font-size: .8rem;
+    flex-shrink: 0;
+    min-width: 16px;
+  }
 </style>
 </head>
 <body>
@@ -405,6 +462,11 @@
     </div>
   </header>
 
+  <nav class="mode-tabs" role="tablist">
+    <button class="mode-tab" id="tabDrill" type="button" role="tab" aria-selected="true">Drill</button>
+    <button class="mode-tab" id="tabFlash" type="button" role="tab" aria-selected="false">Flashcards</button>
+  </nav>
+
   <div class="layout">
     <aside class="panel sidebar">
       <div>
@@ -415,7 +477,7 @@
         <h2>Difficulty</h2>
         <div class="filters" id="levelFilters"></div>
       </div>
-      <div>
+      <div id="autoAdvanceSection">
         <h2>Auto-Advance</h2>
         <label class="auto-toggle">
           <input type="checkbox" id="autoToggle">
@@ -426,7 +488,7 @@
           <input type="number" id="autoWpsInput" min="1" max="8" step="0.5">
         </label>
       </div>
-      <div>
+      <div id="scoreSection">
         <h2>Session Score</h2>
         <div class="score-hero" id="scoreTotal">0</div>
         <div class="stat-row"><span>Answered</span><b id="statAnswered">0</b></div>
@@ -436,17 +498,20 @@
       </div>
     </aside>
 
-    <div class="panel">
+    <div class="panel" id="drillMainPanel">
       <main class="stage" id="stage"></main>
+    </div>
+    <div class="panel" id="flashMainPanel" style="display:none;">
+      <main class="stage" id="flashStage"></main>
     </div>
   </div>
 
-  <div class="log">
+  <div class="log" id="logSection">
     <h2>Recent Answers</h2>
     <ul id="logList"></ul>
   </div>
 
-  <footer class="note">Practice packet &mdash; click a clue tier to reveal it, then judge your buzz before checking the answer.</footer>
+  <footer class="note" id="footerNote">Practice packet &mdash; click a clue tier to reveal it, then judge your buzz before checking the answer.</footer>
 </div>
 
 <script>
@@ -472,6 +537,12 @@ const state = {
   autoAdvance: false,
   autoWps: 3,
   autoTimer: null,
+  mode: "drill",
+  flashPool: [],
+  flashOrder: [],
+  flashIdx: 0,
+  flashCurrent: null,
+  flashFlipped: false,
 };
 
 function getClueSegments(q) {
@@ -556,9 +627,13 @@ function applyFilters() {
   state.pool = buildPool();
   state.order = shuffledIndices(state.pool.length);
   state.idx = 0;
+  state.flashPool = state.pool;
+  state.flashOrder = shuffledIndices(state.flashPool.length);
+  state.flashIdx = 0;
   renderFilters();
   renderLevelFilters();
   loadQuestion();
+  loadFlashcard();
 }
 
 function loadQuestion() {
@@ -615,6 +690,64 @@ function judge(outcome) {
   } else {
     nextQuestion();
   }
+}
+
+function loadFlashcard() {
+  if (state.flashOrder.length === 0) { state.flashCurrent = null; renderFlashStage(); return; }
+  if (state.flashIdx >= state.flashOrder.length) {
+    state.flashOrder = shuffledIndices(state.flashPool.length);
+    state.flashIdx = 0;
+  }
+  state.flashCurrent = state.flashPool[state.flashOrder[state.flashIdx]];
+  state.flashFlipped = false;
+  renderFlashStage();
+}
+
+function nextFlashcard() {
+  state.flashIdx += 1;
+  loadFlashcard();
+}
+
+function flipFlashcard() {
+  state.flashFlipped = !state.flashFlipped;
+  renderFlashStage();
+}
+
+function renderFlashStage() {
+  const stage = document.getElementById("flashStage");
+  if (!stage) return;
+  if (!state.flashCurrent) {
+    stage.innerHTML = '<p style="color:var(--ink-soft);">No questions in this set.</p>';
+    return;
+  }
+  const q = state.flashCurrent;
+  const catClass = q.category === "US" ? "us" : "world";
+  const catLabel = q.category === "US" ? "US History" : "World History";
+  const isFinals = q.level === "finals";
+  const facts = getClueSegments(q);
+
+  let html = "";
+  html += `<div class="q-meta"><span class="badge ${catClass}">${catLabel}</span>${isFinals ? '<span class="finals-badge">Finals Level</span>' : ''}<span class="topic">${escapeHtml(q.topic)}</span><span class="qnum">#${q.id}</span></div>`;
+
+  html += `<div class="flash-card">`;
+  html += `<div class="flash-answer">${escapeHtml(q.answer)}</div>`;
+  if (state.flashFlipped) {
+    html += '<div class="flash-facts">';
+    facts.forEach((f, i) => {
+      html += `<div class="flash-fact"><span class="flash-fact-n">${i + 1}</span><span class="flash-fact-text">${escapeHtml(f)}</span></div>`;
+    });
+    html += '</div>';
+  }
+  html += '</div>';
+
+  html += '<div class="controls">';
+  html += `<button class="action btn-primary" id="btnFlip" type="button">${state.flashFlipped ? "Hide Facts" : "Reveal Facts"}</button>`;
+  html += `<button class="action btn-ghost" id="btnNextCard" type="button">Next Card &rarr;</button>`;
+  html += '</div>';
+
+  stage.innerHTML = html;
+  document.getElementById("btnFlip").addEventListener("click", flipFlashcard);
+  document.getElementById("btnNextCard").addEventListener("click", nextFlashcard);
 }
 
 function levelScoped(list) {
@@ -813,6 +946,31 @@ autoWpsInput.addEventListener("change", () => {
   autoWpsInput.value = state.autoWps;
   if (state.autoAdvance) scheduleAutoAdvance();
 });
+
+const FOOTER_TEXT = {
+  drill: "Practice packet — click a clue tier to reveal it, then judge your buzz before checking the answer.",
+  flash: "Flashcards — the answer comes first. Try to recall the facts, then flip the card to check yourself. No scoring, no timer.",
+};
+
+function setMode(mode) {
+  state.mode = mode;
+  document.getElementById("tabDrill").setAttribute("aria-selected", String(mode === "drill"));
+  document.getElementById("tabFlash").setAttribute("aria-selected", String(mode === "flash"));
+  document.getElementById("drillMainPanel").style.display = mode === "drill" ? "" : "none";
+  document.getElementById("flashMainPanel").style.display = mode === "flash" ? "" : "none";
+  document.getElementById("autoAdvanceSection").style.display = mode === "drill" ? "" : "none";
+  document.getElementById("scoreSection").style.display = mode === "drill" ? "" : "none";
+  document.getElementById("logSection").style.display = mode === "drill" ? "" : "none";
+  document.getElementById("footerNote").textContent = FOOTER_TEXT[mode];
+  if (mode === "drill") {
+    scheduleAutoAdvance();
+  } else {
+    clearAutoTimer();
+  }
+}
+
+document.getElementById("tabDrill").addEventListener("click", () => setMode("drill"));
+document.getElementById("tabFlash").addEventListener("click", () => setMode("flash"));
 
 applyFilters();
 renderSidebarStats();
