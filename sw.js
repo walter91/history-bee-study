@@ -1,4 +1,4 @@
-const CACHE = "history-bee-v2";
+const CACHE = "history-bee-v3";
 const ASSETS = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 // The HTML shell carries the question bank inline, so it must always be
 // fetched fresh when online -- a stale-while-revalidate cache here means a
@@ -32,8 +32,16 @@ self.addEventListener("fetch", (event) => {
   const networkFirst = isNavigation || NETWORK_FIRST.has(requestKey(event.request));
 
   if (networkFirst) {
+    // cache: "no-cache" makes the browser revalidate with GitHub Pages instead
+    // of reusing its own HTTP-cached copy (Pages sends max-age=600, which
+    // otherwise lets an update sit unseen for up to 10 minutes). A navigation
+    // Request can't be re-initialised, so fetch by URL.
+    const fresh = isNavigation
+      ? fetch(event.request.url, { cache: "no-cache", credentials: "same-origin" })
+      : fetch(event.request, { cache: "no-cache" });
     event.respondWith(
-      fetch(event.request)
+      fresh
+        .then((response) => (response.redirected ? fetch(event.request) : response))
         .then((response) => {
           if (response.ok) {
             const copy = response.clone();

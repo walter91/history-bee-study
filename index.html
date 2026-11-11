@@ -1013,6 +1013,36 @@ function touchActivity() {
   state.lastActivity = Date.now();
 }
 
+// The game in progress (score + current streak) is saved too, so a refresh or
+// closed tab doesn't throw away a streak before it reaches the Top 10.
+const GAME_KEY = "historyBeeGame";
+function saveGame() {
+  try {
+    localStorage.setItem(GAME_KEY, JSON.stringify({
+      score: state.score, answered: state.answered, correct: state.correct,
+      streak: state.streak, runPoints: state.runPoints, lastActivity: state.lastActivity,
+    }));
+  } catch (e) { /* private mode etc. */ }
+}
+
+function restoreGame() {
+  let g = null;
+  try { g = JSON.parse(localStorage.getItem(GAME_KEY) || "null"); } catch (e) {}
+  if (!g || typeof g !== "object") return;
+  const n = k => Math.max(0, Number(g[k]) || 0);
+  const last = Number(g.lastActivity) || 0;
+  if (Date.now() - last <= GAME_IDLE_MINUTES * 60 * 1000) {
+    state.score = n("score"); state.answered = n("answered"); state.correct = n("correct");
+    state.streak = n("streak"); state.runPoints = n("runPoints"); state.lastActivity = last;
+  } else if (n("answered") > 0) {
+    // The saved game went idle while the page was closed: end it now.
+    const pts = n("runPoints");
+    document.getElementById("gameNotice").textContent =
+      `Your last game ended after ${GAME_IDLE_MINUTES} minutes idle. Last game: ${n("score")} pts.`;
+    if (qualifiesForTop10(pts)) setTimeout(() => askNameForTop10(pts, last), 0);
+  }
+}
+
 function newGame(reason) {
   const hadPlay = state.answered > 0;
   const final = `Last game: ${state.score} pts.`;
@@ -1067,6 +1097,7 @@ function renderTop10() {
 }
 
 function renderSidebarStats() {
+  saveGame();
   document.getElementById("statStreak").textContent = state.streak;
   document.getElementById("statRunPoints").textContent = state.runPoints;
   document.getElementById("scoreTotal").textContent = state.score;
@@ -1270,6 +1301,7 @@ modeTabs.forEach((tab, index) => {
   });
 });
 
+restoreGame();
 renderTop10();
 applyFilters();
 renderSidebarStats();
