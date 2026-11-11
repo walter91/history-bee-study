@@ -247,6 +247,21 @@
     cursor: pointer;
   }
   .reset-btn:hover { border-color: var(--bad); color: var(--bad); }
+  .top10 { list-style: none; margin: 0; padding: 0; font-size: .85rem; }
+  .top10 li { display: grid; grid-template-columns: 1.6em 1fr auto; gap: 6px; padding: 3px 0; color: var(--ink-soft); }
+  .top10 li .nm { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .top10 li b { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; color: var(--ink); font-weight: 600; }
+  .top10 li.fresh .nm, .top10 li.fresh b { color: var(--brass-ink); }
+  .top10 .empty { color: var(--ink-soft); font-style: italic; display: block; }
+  .top10 li .nm small { display: block; font-size: .72rem; color: var(--ink-soft); }
+  dialog.name-dialog { border: 1px solid var(--line); border-radius: 12px; padding: 22px; max-width: min(360px, 90vw); background: var(--paper-raised, #fff); color: var(--ink); }
+  dialog.name-dialog::backdrop { background: rgba(20, 28, 45, .45); }
+  dialog.name-dialog h3 { margin: 0 0 6px; font-family: "Fraunces", serif; }
+  dialog.name-dialog p { margin: 0 0 14px; color: var(--ink-soft); font-size: .9rem; }
+  dialog.name-dialog input { width: 100%; box-sizing: border-box; font: inherit; padding: 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 14px; }
+  dialog.name-dialog .row { display: flex; gap: 10px; justify-content: flex-end; }
+  .game-notice { font-size: .8rem; color: var(--ink-soft); margin: 6px 0 0; }
+  .game-notice:empty { display: none; }
 
   main.stage { padding: 26px clamp(18px, 3vw, 30px) 28px; min-height: 420px; display: flex; flex-direction: column; min-width: 0; }
 
@@ -336,6 +351,14 @@
   }
 
   .controls { display: flex; gap: 10px; flex-wrap: wrap; margin-top: auto; padding-top: 6px; }
+  /* Judging buttons get their own row below the reveal row, so a tap aimed at
+     a reveal button that just vanished lands on empty space, not a judgment. */
+  .controls.judge-row { margin-top: 10px; padding-top: 0; }
+  button.action.slot-hidden { visibility: hidden; }
+  /* Fixed widths so label changes ("10 pts" -> "5 pts", Pause -> Resume)
+     don't nudge the Answer button sideways. */
+  button.action.reveal-slot { min-width: 14.5em; }
+  button.action.pause-slot { min-width: 13em; }
   button.action {
     font: inherit;
     font-weight: 600;
@@ -507,7 +530,12 @@
         <div class="stat-row"><span>Answered</span><b id="statAnswered">0</b></div>
         <div class="stat-row"><span>Correct</span><b id="statCorrect">0</b></div>
         <div class="stat-row"><span>Accuracy</span><b id="statAccuracy">&mdash;</b></div>
-        <button class="reset-btn" id="resetBtn" type="button">Reset session</button>
+        <div class="stat-row"><span>Streak</span><b id="statStreak">0</b></div>
+        <div class="stat-row"><span>Points this streak</span><b id="statRunPoints">0</b></div>
+        <p class="game-notice" id="gameNotice" aria-live="polite"></p>
+        <button class="reset-btn" id="resetBtn" type="button">New game</button>
+        <h2 style="margin-top:14px">Top 10 Streaks</h2>
+        <ol class="top10" id="top10List"></ol>
       </div>
     </aside>
 
@@ -524,7 +552,19 @@
     <ul id="logList"></ul>
   </div>
 
-  <footer class="note" id="footerNote">Practice packet &mdash; click a clue tier to reveal it, then judge your buzz before checking the answer.</footer>
+  <dialog class="name-dialog" id="nameDialog" aria-labelledby="nameDialogTitle">
+    <form method="dialog">
+      <h3 id="nameDialogTitle">Top 10 streak!</h3>
+      <p><b id="nameDialogPoints">0</b> points in a row. Add your name to the board.</p>
+      <input id="nameInput" type="text" maxlength="24" autocomplete="nickname" placeholder="Your name" aria-label="Your name">
+      <div class="row">
+        <button class="action btn-ghost" value="skip" type="submit" formnovalidate>Skip</button>
+        <button class="action btn-primary" value="save" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <footer class="note" id="footerNote">Practice packet &mdash; clues read automatically; press Answer when you would buzz, then judge yourself. A miss ends your streak.</footer>
 </div>
 
 <script>
@@ -542,12 +582,16 @@ const state = {
   answerShown: false,
   buzzTier: null,
   filter: "All",
-  levelFilter: "All",
+  levelFilter: "Finals",
   score: 0,
   answered: 0,
   correct: 0,
   log: [],
-  autoAdvance: false,
+  streak: 0,
+  runPoints: 0,
+  nameDialogOpen: false,
+  lastActivity: Date.now(),
+  autoAdvance: true,
   autoWps: 3,
   autoTimer: null,
   autoPaused: false,
@@ -620,7 +664,7 @@ function clearAutoTimer() {
 
 function scheduleAutoAdvance() {
   clearAutoTimer();
-  if (state.mode !== "drill" || !state.autoAdvance || state.autoPaused || !state.current || state.answerShown) return;
+  if (state.mode !== "drill" || !state.autoAdvance || state.autoPaused || state.nameDialogOpen || !state.current || state.answerShown) return;
   const segs = getClueSegments(state.current);
   const currentText = segs[state.revealed - 1] || "";
   const delay = msForSegment(currentText, state.autoWps);
@@ -696,6 +740,7 @@ function loadQuestion() {
 }
 
 function toggleAutoPause() {
+  touchActivity();
   state.autoPaused = !state.autoPaused;
   if (state.autoPaused) {
     clearAutoTimer();
@@ -711,12 +756,14 @@ function nextQuestion() {
 }
 
 function revealNext() {
+  touchActivity();
   if (state.revealed < 3) state.revealed += 1;
   renderStage();
   scheduleAutoAdvance();
 }
 
 function showAnswer() {
+  touchActivity();
   state.buzzTier = state.revealed;
   state.answerShown = true;
   state.revealed = 3;
@@ -735,6 +782,10 @@ function judge(outcome) {
   state.score += earned;
   state.answered += 1;
   if (isCorrect) state.correct += 1;
+  // A miss ends the streak (and may earn a Top 10 spot); abstaining leaves it alone.
+  if (isCorrect) { state.streak += 1; state.runPoints += earned; }
+  touchActivity();
+  if (outcome === "wrong") endRun("miss");
   state.log.unshift({ answer: state.current.answer, earned, outcome, ts: Date.now() });
   state.log = state.log.slice(0, 8);
   renderSidebarStats();
@@ -859,7 +910,126 @@ function renderLevelFilters() {
   });
 }
 
+// ---- Top 10 streaks (saved in this browser; GitHub Pages has no server) ----
+// A streak is the run of answers since the last miss. When it ends, its points
+// can earn a Top 10 spot (name + points + date/time).
+const TOP_KEY = "historyBeeTop10";
+const NAME_KEY = "historyBeeLastName";
+const TOP_N = 10;
+const GAME_IDLE_MINUTES = 30;   // a game ends after this long with no activity
+
+function loadTop10() {
+  try {
+    const list = JSON.parse(localStorage.getItem(TOP_KEY) || "[]");
+    return Array.isArray(list) ? list.filter(e => e && Number(e.points) > 0)
+      .map(e => ({ name: String(e.name || "Anonymous").slice(0, 24), points: Number(e.points), at: Number(e.at) || 0 }))
+      .sort((a, b) => b.points - a.points || a.at - b.at).slice(0, TOP_N) : [];
+  } catch (e) {
+    return [];
+  }
+}
+let top10 = loadTop10();
+let freshEntryAt = null;
+
+function saveTop10() {
+  try { localStorage.setItem(TOP_KEY, JSON.stringify(top10)); } catch (e) { /* private mode etc. */ }
+}
+
+function qualifiesForTop10(points) {
+  if (points <= 0) return false;
+  return top10.length < TOP_N || points > top10[top10.length - 1].points;
+}
+
+function addTop10(name, points, at) {
+  top10.push({ name: (name || "").trim().slice(0, 24) || "Anonymous", points, at });
+  top10.sort((a, b) => b.points - a.points || a.at - b.at);
+  top10 = top10.slice(0, TOP_N);
+  freshEntryAt = at;
+  saveTop10();
+  renderTop10();
+}
+
+function askNameForTop10(points, at) {
+  let lastName = "";
+  try { lastName = localStorage.getItem(NAME_KEY) || ""; } catch (e) {}
+  const dlg = document.getElementById("nameDialog");
+  const finish = name => {
+    if (name !== null) {
+      try { localStorage.setItem(NAME_KEY, name.trim()); } catch (e) {}
+      addTop10(name, points, at);
+    }
+    state.nameDialogOpen = false;
+    scheduleAutoAdvance();
+  };
+  state.nameDialogOpen = true;
+  clearAutoTimer();
+  if (!dlg || typeof dlg.showModal !== "function") {
+    finish(window.prompt(`Top 10 streak: ${points} points! Your name?`, lastName) ?? null);
+    return;
+  }
+  document.getElementById("nameDialogPoints").textContent = points;
+  const input = document.getElementById("nameInput");
+  input.value = lastName;
+  dlg.returnValue = "";
+  input.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); dlg.close("save"); } };
+  dlg.onclose = () => finish(dlg.returnValue === "save" ? input.value : null);
+  dlg.showModal();
+  input.select();
+}
+
+function endRun() {
+  const points = state.runPoints;
+  state.streak = 0;
+  state.runPoints = 0;
+  renderSidebarStats();
+  if (qualifiesForTop10(points)) askNameForTop10(points, Date.now());
+}
+
+function touchActivity() {
+  state.lastActivity = Date.now();
+}
+
+function newGame(reason) {
+  const hadPlay = state.answered > 0;
+  const final = `Last game: ${state.score} pts.`;
+  endRun();
+  state.score = 0; state.answered = 0; state.correct = 0; state.log = [];
+  touchActivity();
+  document.getElementById("gameNotice").textContent =
+    reason === "idle" ? `Game ended after ${GAME_IDLE_MINUTES} minutes idle. ${final}` :
+    hadPlay ? final : "";
+  if (reason === "idle") {
+    clearAutoTimer();
+    state.autoPaused = true;   // don't start reading to an empty room
+    renderStage();
+  }
+  renderSidebarStats(); renderLog();
+}
+
+function checkIdle() {
+  if (state.answered > 0 && Date.now() - state.lastActivity > GAME_IDLE_MINUTES * 60 * 1000) {
+    newGame("idle");
+  }
+}
+setInterval(checkIdle, 30 * 1000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) checkIdle(); });
+
+const TOP_DATE_FMT = { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" };
+function renderTop10() {
+  const el = document.getElementById("top10List");
+  if (!top10.length) {
+    el.innerHTML = '<li class="empty">No streaks yet &mdash; get some right in a row!</li>';
+    return;
+  }
+  el.innerHTML = top10.map((e, i) =>
+    `<li class="${e.at === freshEntryAt ? "fresh" : ""}"><span>${i + 1}.</span>` +
+    `<span class="nm">${escapeHtml(e.name)}<small>${e.at ? new Date(e.at).toLocaleString(undefined, TOP_DATE_FMT) : ""}</small></span>` +
+    `<b>${e.points}</b></li>`).join("");
+}
+
 function renderSidebarStats() {
+  document.getElementById("statStreak").textContent = state.streak;
+  document.getElementById("statRunPoints").textContent = state.runPoints;
   document.getElementById("scoreTotal").textContent = state.score;
   document.getElementById("statAnswered").textContent = state.answered;
   document.getElementById("statCorrect").textContent = state.correct;
@@ -941,25 +1111,31 @@ function renderStage() {
   if (state.answerShown) {
     html += `<div class="answer-box shown">Answer: <b>${q.answer}</b></div>`;
   } else {
-    html += `<div class="answer-box">Answer hidden &mdash; reveal clues, then check when you're ready to judge your buzz.</div>`;
+    html += `<div class="answer-box">Answer hidden &mdash; press <b>Answer</b> when you would buzz in.</div>`;
   }
 
+  // Reveal row: buttons keep their slots (hidden, not removed) so nothing
+  // shifts under the pointer as clues advance or the answer appears.
+  const slot = (show, cls, id, label) => show
+    ? `<button class="action ${cls}" id="${id}" type="button">${label}</button>`
+    : `<button class="action ${cls} slot-hidden" type="button" tabindex="-1" aria-hidden="true" disabled>${label}</button>`;
+  const clueMoreToCome = state.revealed < 3 && !state.answerShown;
   html += '<div class="controls">';
-  if (state.revealed < 3 && !state.answerShown) {
-    html += `<button class="action btn-primary" id="btnReveal" type="button">Reveal Next Clue (${state.revealed === 1 ? 10 : 5} pts)</button>`;
-  }
-  if (state.autoAdvance && state.revealed < 3 && !state.answerShown) {
-    html += `<button class="action btn-neutral" id="btnPauseAuto" type="button">${state.autoPaused ? "Resume Auto-Read" : "Pause Auto-Read"}</button>`;
-  }
-  if (!state.answerShown) {
-    html += `<button class="action btn-ghost" id="btnShow" type="button">Show Answer</button>`;
+  if (state.autoAdvance) {
+    html += slot(clueMoreToCome, "btn-neutral pause-slot", "btnPauseAuto", state.autoPaused ? "Resume Auto-Read" : "Pause Auto-Read");
   } else {
+    html += slot(clueMoreToCome, "btn-primary reveal-slot", "btnReveal", `Reveal Next Clue (${state.revealed >= 2 ? 5 : 10} pts)`);
+  }
+  html += slot(!state.answerShown, "btn-ghost", "btnShow", "Answer");
+  html += '</div>';
+  if (state.answerShown) {
+    html += '<div class="controls judge-row">';
     html += `<button class="action btn-good" id="btnCorrect" type="button">I got it right</button>`;
     html += `<button class="action btn-neutral" id="btnAbstain" type="button">I abstained</button>`;
     html += `<button class="action btn-bad" id="btnWrong" type="button">I missed it</button>`;
     html += `<button class="action btn-ghost" id="btnSkip" type="button">Skip &rarr;</button>`;
+    html += '</div>';
   }
-  html += '</div>';
 
   stage.innerHTML = html;
 
@@ -976,19 +1152,17 @@ function renderStage() {
   const wrongBtn = document.getElementById("btnWrong");
   if (wrongBtn) wrongBtn.addEventListener("click", () => judge("wrong"));
   const skipBtn = document.getElementById("btnSkip");
-  if (skipBtn) skipBtn.addEventListener("click", nextQuestion);
+  if (skipBtn) skipBtn.addEventListener("click", () => { touchActivity(); nextQuestion(); });
 }
 
-document.getElementById("resetBtn").addEventListener("click", () => {
-  state.score = 0; state.answered = 0; state.correct = 0; state.log = [];
-  renderSidebarStats(); renderLog();
-});
+document.getElementById("resetBtn").addEventListener("click", () => newGame("manual"));
 
 const autoToggle = document.getElementById("autoToggle");
 const autoWpsInput = document.getElementById("autoWpsInput");
 const autoWpmRow = document.getElementById("autoWpmRow");
 
 autoWpsInput.value = state.autoWps;
+autoToggle.checked = state.autoAdvance;
 autoWpmRow.classList.toggle("disabled", !state.autoAdvance);
 
 autoToggle.addEventListener("change", () => {
@@ -1011,7 +1185,7 @@ autoWpsInput.addEventListener("change", () => {
 });
 
 const FOOTER_TEXT = {
-  drill: "Practice packet — click a clue tier to reveal it, then judge your buzz before checking the answer.",
+  drill: "Practice packet — clues read automatically; press Answer when you would buzz, then judge yourself. A miss ends your streak.",
   flash: "Flashcards — the answer comes first. Try to recall the facts, then flip the card to check yourself. No scoring, no timer.",
 };
 
@@ -1056,6 +1230,7 @@ modeTabs.forEach((tab, index) => {
   });
 });
 
+renderTop10();
 applyFilters();
 renderSidebarStats();
 renderLog();
