@@ -540,7 +540,7 @@ const state = {
   current: null,
   revealed: 1,
   answerShown: false,
-  awaitingNext: false,
+  buzzTier: null,
   filter: "All",
   levelFilter: "All",
   score: 0,
@@ -550,6 +550,7 @@ const state = {
   autoAdvance: false,
   autoWps: 3,
   autoTimer: null,
+  autoPaused: false,
   mode: "drill",
   flashPool: [],
   flashOrder: [],
@@ -619,7 +620,7 @@ function clearAutoTimer() {
 
 function scheduleAutoAdvance() {
   clearAutoTimer();
-  if (state.mode !== "drill" || !state.autoAdvance || !state.current || state.answerShown) return;
+  if (state.mode !== "drill" || !state.autoAdvance || state.autoPaused || !state.current || state.answerShown) return;
   const segs = getClueSegments(state.current);
   const currentText = segs[state.revealed - 1] || "";
   const delay = msForSegment(currentText, state.autoWps);
@@ -688,9 +689,20 @@ function loadQuestion() {
   state.current = state.pool[state.order[state.idx]];
   state.revealed = 1;
   state.answerShown = false;
-  state.awaitingNext = false;
+  state.buzzTier = null;
+  state.autoPaused = false;
   renderStage();
   scheduleAutoAdvance();
+}
+
+function toggleAutoPause() {
+  state.autoPaused = !state.autoPaused;
+  if (state.autoPaused) {
+    clearAutoTimer();
+  } else {
+    scheduleAutoAdvance();
+  }
+  renderStage();
 }
 
 function nextQuestion() {
@@ -705,7 +717,9 @@ function revealNext() {
 }
 
 function showAnswer() {
+  state.buzzTier = state.revealed;
   state.answerShown = true;
+  state.revealed = 3;
   clearAutoTimer();
   renderStage();
 }
@@ -714,7 +728,8 @@ function showAnswer() {
 function judge(outcome) {
   if (!state.answerShown || !state.current) return;
   clearAutoTimer();
-  const pts = state.revealed === 1 ? 15 : state.revealed === 2 ? 10 : 5;
+  const tier = state.buzzTier || state.revealed;
+  const pts = tier === 1 ? 15 : tier === 2 ? 10 : 5;
   const isCorrect = outcome === "correct";
   const earned = isCorrect ? pts : 0;
   state.score += earned;
@@ -724,14 +739,7 @@ function judge(outcome) {
   state.log = state.log.slice(0, 8);
   renderSidebarStats();
   renderLog();
-  if (!isCorrect && state.revealed < 3) {
-    // let them see the rest of the prompt they never heard before moving on
-    state.revealed = 3;
-    state.awaitingNext = true;
-    renderStage();
-  } else {
-    nextQuestion();
-  }
+  nextQuestion();
 }
 
 function loadFlashcard(focusId = null) {
@@ -919,13 +927,14 @@ function renderStage() {
   let html = "";
   html += `<div class="q-meta"><span class="badge ${catClass}">${catLabel}</span>${isFinals ? '<span class="finals-badge">Finals Level</span>' : ''}<span class="topic">${q.topic}</span><span class="qnum">#${q.id}</span></div>`;
 
+  const highlightTier = state.buzzTier || state.revealed;
   if (isFinals) {
     html += `<div class="finals-para">${renderFinalsParagraph(q.text, state.revealed)}</div>`;
   } else {
     html += '<div class="clue-ladder">';
-    html += clueRow(15, q.clue15, state.revealed >= 1, state.revealed === 1);
-    html += clueRow(10, q.clue10, state.revealed >= 2, state.revealed === 2);
-    html += clueRow(5, q.clue5, state.revealed >= 3, state.revealed === 3);
+    html += clueRow(15, q.clue15, state.revealed >= 1, highlightTier === 1);
+    html += clueRow(10, q.clue10, state.revealed >= 2, highlightTier === 2);
+    html += clueRow(5, q.clue5, state.revealed >= 3, highlightTier === 3);
     html += '</div>';
   }
 
@@ -936,29 +945,28 @@ function renderStage() {
   }
 
   html += '<div class="controls">';
-  if (state.awaitingNext) {
-    html += `<button class="action btn-primary" id="btnNext" type="button">Next Question &rarr;</button>`;
+  if (state.revealed < 3 && !state.answerShown) {
+    html += `<button class="action btn-primary" id="btnReveal" type="button">Reveal Next Clue (${state.revealed === 1 ? 10 : 5} pts)</button>`;
+  }
+  if (state.autoAdvance && state.revealed < 3 && !state.answerShown) {
+    html += `<button class="action btn-neutral" id="btnPauseAuto" type="button">${state.autoPaused ? "Resume Auto-Read" : "Pause Auto-Read"}</button>`;
+  }
+  if (!state.answerShown) {
+    html += `<button class="action btn-ghost" id="btnShow" type="button">Show Answer</button>`;
   } else {
-    if (state.revealed < 3 && !state.answerShown) {
-      html += `<button class="action btn-primary" id="btnReveal" type="button">Reveal Next Clue (${state.revealed === 1 ? 10 : 5} pts)</button>`;
-    }
-    if (!state.answerShown) {
-      html += `<button class="action btn-ghost" id="btnShow" type="button">Show Answer</button>`;
-    } else {
-      html += `<button class="action btn-good" id="btnCorrect" type="button">I got it right</button>`;
-      html += `<button class="action btn-neutral" id="btnAbstain" type="button">I abstained</button>`;
-      html += `<button class="action btn-bad" id="btnWrong" type="button">I missed it</button>`;
-      html += `<button class="action btn-ghost" id="btnSkip" type="button">Skip &rarr;</button>`;
-    }
+    html += `<button class="action btn-good" id="btnCorrect" type="button">I got it right</button>`;
+    html += `<button class="action btn-neutral" id="btnAbstain" type="button">I abstained</button>`;
+    html += `<button class="action btn-bad" id="btnWrong" type="button">I missed it</button>`;
+    html += `<button class="action btn-ghost" id="btnSkip" type="button">Skip &rarr;</button>`;
   }
   html += '</div>';
 
   stage.innerHTML = html;
 
-  const nextBtn = document.getElementById("btnNext");
-  if (nextBtn) nextBtn.addEventListener("click", nextQuestion);
   const revealBtn = document.getElementById("btnReveal");
   if (revealBtn) revealBtn.addEventListener("click", revealNext);
+  const pauseAutoBtn = document.getElementById("btnPauseAuto");
+  if (pauseAutoBtn) pauseAutoBtn.addEventListener("click", toggleAutoPause);
   const showBtn = document.getElementById("btnShow");
   if (showBtn) showBtn.addEventListener("click", showAnswer);
   const correctBtn = document.getElementById("btnCorrect");
@@ -985,12 +993,14 @@ autoWpmRow.classList.toggle("disabled", !state.autoAdvance);
 
 autoToggle.addEventListener("change", () => {
   state.autoAdvance = autoToggle.checked;
+  state.autoPaused = false;
   autoWpmRow.classList.toggle("disabled", !state.autoAdvance);
   if (state.autoAdvance) {
     scheduleAutoAdvance();
   } else {
     clearAutoTimer();
   }
+  renderStage();
 });
 
 autoWpsInput.addEventListener("change", () => {
